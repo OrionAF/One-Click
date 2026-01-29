@@ -46,7 +46,6 @@ public class OneClickPlugin extends Plugin
 	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked event)
 	{
-		// DEBUG: Print EVERYTHING to console to see what is happening
 		if (config.debug())
 		{
 			System.out.println("[OneClick DEBUG] Action: " + event.getMenuAction() + 
@@ -55,18 +54,15 @@ public class OneClickPlugin extends Plugin
 				" | ID: " + event.getId());
 		}
 
-		// 1. Basic Safety Checks (but allow more actions to pass through for testing)
 		Widget widget = client.getWidget(event.getParam1());
 		if (widget == null) return;
 		
-		// 2. Validate Inventory
 		ItemContainer inventory = client.getItemContainer(InventoryID.INVENTORY);
 		if (inventory == null) return;
 		
 		Item[] items = inventory.getItems();
 		int clickedSlot = event.getParam0();
 
-		// If the click is not in the inventory bounds, ignore it
 		if (clickedSlot < 0 || clickedSlot >= items.length) 
 		{
 			return;
@@ -75,39 +71,32 @@ public class OneClickPlugin extends Plugin
 		Item clickedItem = items[clickedSlot];
 		int clickedId = clickedItem.getId();
 		
-		// Handle empty slots (id -1 or 6512)
 		if (clickedId <= -1 || clickedId == 6512) return;
 
 		String clickedName = Text.removeTags(client.getItemDefinition(clickedId).getName()).toLowerCase();
 
-		// DEBUG: Tell user exactly what we see
 		if (config.debug())
 		{
-			String msg = "Clicked: " + clickedName + " (ID: " + clickedId + ")";
+			final String debugName = clickedName;
+			final int debugId = clickedId;
 			clientThread.invokeLater(() -> 
-				client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", msg, null));
+				client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Clicked: " + debugName + " (ID: " + debugId + ")", null));
 		}
 
-		// 3. Check Config for Matches
 		Map<String, String> pairs = parseConfig();
 		String targetIdentifier = null;
 		String clickedIdStr = String.valueOf(clickedId);
 
-		// Check Key -> Value
 		if (pairs.containsKey(clickedIdStr)) targetIdentifier = pairs.get(clickedIdStr);
 		else if (pairs.containsKey(clickedName)) targetIdentifier = pairs.get(clickedName);
-		
-		// Check Value -> Key
 		else if (pairs.containsValue(clickedIdStr)) targetIdentifier = getKeyByValue(pairs, clickedIdStr);
 		else if (pairs.containsValue(clickedName)) targetIdentifier = getKeyByValue(pairs, clickedName);
 
 		if (targetIdentifier == null) 
 		{
-			// Debug: No config match
 			return; 
 		}
 
-		// 4. Find the Other Item
 		int sourceSlot = clickedSlot;
 		int sourceId = clickedId;
 		int targetSlot = -1;
@@ -115,10 +104,9 @@ public class OneClickPlugin extends Plugin
 
 		boolean lookingForId = isNumeric(targetIdentifier);
 
-		// Find the target item in inventory
 		for (int i = 0; i < items.length; i++)
 		{
-			if (i == clickedSlot) continue; // Don't match self
+			if (i == clickedSlot) continue;
 
 			int tid = items[i].getId();
 			String tname = Text.removeTags(client.getItemDefinition(tid).getName()).toLowerCase();
@@ -137,13 +125,15 @@ public class OneClickPlugin extends Plugin
 
 		if (targetSlot != -1)
 		{
+			// Create FINAL variables for the lambda to use
+			final int finalTargetId = targetId;
+
 			if (config.debug())
 			{
 				clientThread.invokeLater(() -> 
-					client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Combining -> " + targetId, null));
+					client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Combining -> " + finalTargetId, null));
 			}
 
-			// 5. EXECUTE THE SWAP
 			setSelectedInventoryItem(sourceSlot, sourceId);
 			
 			event.getMenuEntry().setType(MenuAction.WIDGET_TARGET_ON_WIDGET);
