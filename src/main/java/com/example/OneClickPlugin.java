@@ -17,6 +17,7 @@ import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.util.Text;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
@@ -46,7 +47,6 @@ public class OneClickPlugin extends Plugin
 	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked event)
 	{
-		// 1. Filter Check
 		Widget widget = client.getWidget(event.getParam1());
 		if (widget == null) return;
 		
@@ -65,14 +65,12 @@ public class OneClickPlugin extends Plugin
 
 		String clickedName = Text.removeTags(client.getItemDefinition(clickedId).getName()).toLowerCase();
 
-		// 2. Debug Print (Optional)
+		// Debug Print
 		if (config.debug())
 		{
-			// Safe debug without lambda errors
-			System.out.println("Clicked: " + clickedName + " (" + clickedId + ") Action: " + event.getMenuAction());
+			System.out.println("Clicked: " + clickedName + " (" + clickedId + ")");
 		}
 
-		// 3. Find Match
 		Map<String, String> pairs = parseConfig();
 		String targetIdentifier = null;
 		String clickedIdStr = String.valueOf(clickedId);
@@ -84,7 +82,6 @@ public class OneClickPlugin extends Plugin
 
 		if (targetIdentifier == null) return;
 
-		// 4. Find Other Item Slot
 		int sourceSlot = clickedSlot;
 		int sourceId = clickedId;
 		int targetSlot = -1;
@@ -115,20 +112,19 @@ public class OneClickPlugin extends Plugin
 		{
 			final int finalTargetId = targetId;
 			final int finalTargetSlot = targetSlot;
-			final int widgetId = event.getParam1(); // Use the actual widget from the event
+			final int widgetId = event.getParam1();
 
 			if (config.debug())
 			{
 				clientThread.invokeLater(() -> 
-					client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Combining -> " + finalTargetId + " (Slot " + finalTargetSlot + ")", null));
+					client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "OneClick: " + clickedId + " -> " + finalTargetId, null));
 			}
 
-			// 5. EXECUTE SWAP
-			
-			// A. Force Select the Source Item
+			// 1. Force the client to think an item is selected
 			setSelectedInventoryItem(sourceSlot, sourceId);
+			setClientItemSelected(true); // <-- NEW CRITICAL FIX
 
-			// B. Change the Click Event to target the Other Item
+			// 2. Change the click to target the 2nd item
 			if (config.clickMode() == OneClickConfig.ClickMode.LEGACY)
 			{
 				event.getMenuEntry().setType(MenuAction.ITEM_USE_ON_ITEM);
@@ -139,7 +135,7 @@ public class OneClickPlugin extends Plugin
 			}
 
 			event.getMenuEntry().setParam0(targetSlot);
-			event.getMenuEntry().setParam1(widgetId); // Use exact widget ID from the click
+			event.getMenuEntry().setParam1(widgetId);
 			event.getMenuEntry().setIdentifier(targetId);
 		}
 	}
@@ -154,11 +150,42 @@ public class OneClickPlugin extends Plugin
 		}
 		catch (Exception e)
 		{
-			// Reflection fail
+			// Ignore
 		}
 	}
 
-	private void invokeMethod(Object target, String methodName, Class<?> paramType, int paramValue) throws Exception
+	/**
+	 * Tries to find the hidden boolean "isItemSelected" and force it to true.
+	 */
+	private void setClientItemSelected(boolean selected)
+	{
+		try
+		{
+			// 1. Try Standard Method
+			invokeMethod(client, "setItemSelected", boolean.class, selected);
+			return;
+		}
+		catch (Exception e) {}
+
+		try
+		{
+			// 2. Try Integer Method (Some older clients use int 1/0 instead of boolean)
+			invokeMethod(client, "setItemSelected", int.class, selected ? 1 : 0);
+			return;
+		}
+		catch (Exception e) {}
+		
+		// 3. Bruteforce Fields: Check for a boolean flag named 'isItemSelected' or similar
+		try 
+		{
+			Field f = client.getClass().getDeclaredField("isItemSelected");
+			f.setAccessible(true);
+			f.setBoolean(client, selected);
+		} 
+		catch (Exception e) {}
+	}
+
+	private void invokeMethod(Object target, String methodName, Class<?> paramType, Object paramValue) throws Exception
 	{
 		Method method = target.getClass().getMethod(methodName, paramType);
 		method.invoke(target, paramValue);
