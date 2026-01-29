@@ -17,14 +17,13 @@ import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.util.Text;
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
 
 @PluginDescriptor(
 	name = "One Click",
-	description = "Combines configured items in one click",
+	description = "Combines configured items in one click via Invocation",
 	tags = {"fletching", "automation"}
 )
 public class OneClickPlugin extends Plugin
@@ -38,10 +37,18 @@ public class OneClickPlugin extends Plugin
 	@Inject
 	private OneClickConfig config;
 
+	private Method invokeMenuActionMethod;
+
 	@Provides
 	OneClickConfig provideConfig(ConfigManager configManager)
 	{
 		return configManager.getConfig(OneClickConfig.class);
+	}
+
+	@Override
+	protected void startUp()
+	{
+		findInvokeMethod();
 	}
 
 	@Subscribe
@@ -65,17 +72,11 @@ public class OneClickPlugin extends Plugin
 
 		String clickedName = Text.removeTags(client.getItemDefinition(clickedId).getName()).toLowerCase();
 
-		// DEBUG: Print to console
-		if (config.debug())
-		{
-			System.out.println("Clicked: " + clickedName + " (" + clickedId + ")");
-		}
-
 		Map<String, String> pairs = parseConfig();
 		String targetIdentifier = null;
 		String clickedIdStr = String.valueOf(clickedId);
 
-		// Match Logic
+		// Logic to find if this item is in our list
 		if (pairs.containsKey(clickedIdStr)) targetIdentifier = pairs.get(clickedIdStr);
 		else if (pairs.containsKey(clickedName)) targetIdentifier = pairs.get(clickedName);
 		else if (pairs.containsValue(clickedIdStr)) targetIdentifier = getKeyByValue(pairs, clickedIdStr);
@@ -85,10 +86,11 @@ public class OneClickPlugin extends Plugin
 
 		int sourceSlot = clickedSlot;
 		int sourceId = clickedId;
-		String sourceName = clickedName; // We need the name now too
+		String sourceName = clickedName; 
 		
 		int targetSlot = -1;
 		int targetId = -1;
+		String targetName = "";
 
 		boolean lookingForId = isNumeric(targetIdentifier);
 
@@ -107,86 +109,101 @@ public class OneClickPlugin extends Plugin
 			{
 				targetSlot = i;
 				targetId = tid;
+				targetName = tname;
 				break;
 			}
 		}
 
 		if (targetSlot != -1)
 		{
-			final int finalTargetId = targetId;
-			final int finalTargetSlot = targetSlot;
-			final int widgetId = event.getParam1();
+			// WE FOUND THE PAIR.
+			
+			// 1. Stop the original click from happening (so we don't double click)
+			event.consume();
 
-			// 1. FORCE CLIENT STATE
-			// We need to set ID, Slot, Widget, AND Name for the client to be happy.
-			boolean success = setSelectedInventoryItem(sourceSlot, sourceId, sourceName);
-
+			final int fTargetId = targetId;
 			if (config.debug())
 			{
-				final String status = success ? "State Set!" : "Reflection Failed!";
 				clientThread.invokeLater(() -> 
-					client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "OneClick: " + status + " (" + sourceId + "->" + finalTargetId + ")", null));
+					client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Invoking: " + sourceId + " -> " + fTargetId, null));
 			}
 
-			// 2. MODIFY CLICK
-			if (config.clickMode() == OneClickConfig.ClickMode.LEGACY)
-			{
-				event.getMenuEntry().setType(MenuAction.ITEM_USE_ON_ITEM);
-			}
-			else
-			{
-				event.getMenuEntry().setType(MenuAction.WIDGET_TARGET_ON_WIDGET);
-			}
+			// 2. Invoke "Use" on Source Item (This selects it)
+			// Param0=Slot, Param1=Widget, Opcode=ITEM_USE(38 or 33), ID=ItemId, Option="Use", Target=Name
+			invoke(sourceSlot, event.getParam1(), MenuAction.ITEM_USE.getId(), sourceId, "Use", sourceName);
 
-			event.getMenuEntry().setParam0(targetSlot);
-			event.getMenuEntry().setParam1(widgetId);
-			event.getMenuEntry().setIdentifier(targetId);
+			// 3. Invoke "Use On" Target Item
+			// Opcode changes based on Legacy/Modern setting
+			int useOpcode = (config.clickMode() == OneClickConfig.ClickMode.LEGACY) 
+				? MenuAction.ITEM_USE_ON_ITEM.getId() 
+				: MenuAction.WIDGET_TARGET_ON_WIDGET.getId();
+
+			invoke(targetSlot, event.getParam1(), useOpcode, targetId, "Use", sourceName + " -> " + targetName);
 		}
 	}
 
-	private boolean setSelectedInventoryItem(int slot, int id, String name)
+	private void invoke(int param0, int param1, int opcode, int id, String option, String target)
 	{
-		boolean success = false;
+		if (invokeMenuActionMethod == null) 
+		{
+			if (config.debug()) System.out.println("Invoke Method Not Found!");
+			return;
+		}
+
 		try
 		{
-			// Try to find the methods (RuneLite API)
-			invokeMethod(client, "setSelectedItemWidget", int.class, WidgetInfo.INVENTORY.getId());
-			invokeMethod(client, "setSelectedItemSlot", int.class, slot);
-			invokeMethod(client, "setSelectedItemId", int.class, id);
-			
-			// Some clients require the Name to be set too!
-			// We try to capitalize it nicely just in case (e.g. "feather" -> "Feather")
-			String niceName = Character.toUpperCase(name.charAt(0)) + name.substring(1);
-			invokeMethod(client, "setSelectedItemName", String.class, niceName);
-			
-			success = true;
+			// Invoke the method: (param0, param1, opcode, id, option, target, mouseX, mouseY)
+			invokeMenuActionMethod.invoke(client, param0, param1, opcode, id, option, target, 0, 0);
 		}
 		catch (Exception e)
 		{
-			// Reflection failed
+			if (config.debug()) System.out.println("Invoke Error: " + e.getMessage());
 		}
-
-		// Try the brute force boolean as backup
-		setClientItemSelected(true);
-
-		return success;
 	}
 
-	private void setClientItemSelected(boolean selected)
+	private void findInvokeMethod()
 	{
-		try { invokeMethod(client, "setItemSelected", boolean.class, selected); } catch (Exception e) {}
-		try { invokeMethod(client, "setItemSelected", int.class, selected ? 1 : 0); } catch (Exception e) {}
-		try {
-			Field f = client.getClass().getDeclaredField("isItemSelected");
-			f.setAccessible(true);
-			f.setBoolean(client, selected);
-		} catch (Exception e) {}
-	}
+		try
+		{
+			// 1. Try standard name first
+			invokeMenuActionMethod = client.getClass().getMethod("invokeMenuAction", int.class, int.class, int.class, int.class, String.class, String.class, int.class, int.class);
+			return;
+		}
+		catch (Exception e) {}
 
-	private void invokeMethod(Object target, String methodName, Class<?> paramType, Object paramValue) throws Exception
-	{
-		Method method = target.getClass().getMethod(methodName, paramType);
-		method.invoke(target, paramValue);
+		// 2. Search by Signature (The "Fingerprint" method)
+		// We look for ANY method that takes (int, int, int, int, String, String, int, int)
+		for (Method m : client.getClass().getDeclaredMethods())
+		{
+			Class<?>[] params = m.getParameterTypes();
+			if (params.length == 8 
+				&& params[0] == int.class && params[1] == int.class 
+				&& params[2] == int.class && params[3] == int.class
+				&& params[4] == String.class && params[5] == String.class
+				&& params[6] == int.class && params[7] == int.class)
+			{
+				m.setAccessible(true);
+				invokeMenuActionMethod = m;
+				if (config.debug()) System.out.println("Found Invoke Method via Signature: " + m.getName());
+				return;
+			}
+		}
+		
+		// 3. Fallback: Some clients exclude mouse coordinates (6 args)
+		for (Method m : client.getClass().getDeclaredMethods())
+		{
+			Class<?>[] params = m.getParameterTypes();
+			if (params.length == 6
+				&& params[0] == int.class && params[1] == int.class 
+				&& params[2] == int.class && params[3] == int.class
+				&& params[4] == String.class && params[5] == String.class)
+			{
+				m.setAccessible(true);
+				invokeMenuActionMethod = m;
+				if (config.debug()) System.out.println("Found Invoke Method (6 args): " + m.getName());
+				return;
+			}
+		}
 	}
 
 	private String getKeyByValue(Map<String, String> map, String value)
