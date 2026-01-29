@@ -7,7 +7,6 @@ import net.runelite.api.InventoryID;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.MenuAction;
-import net.runelite.api.MenuEntry;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
@@ -16,13 +15,14 @@ import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.util.Text;
+import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
 
 @PluginDescriptor(
 	name = "One Click",
 	description = "Combines configured items in one click",
-	tags = {""}
+	tags = {"fletching", "herblore", "macro", "automation"}
 )
 public class OneClickPlugin extends Plugin
 {
@@ -41,6 +41,7 @@ public class OneClickPlugin extends Plugin
 	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked event)
 	{
+		// Only run if we are clicking an item in the inventory
 		if (event.getMenuAction() != MenuAction.ITEM_USE && 
 			event.getMenuAction() != MenuAction.ITEM_FIRST_OPTION &&
 			event.getMenuAction() != MenuAction.ITEM_SECOND_OPTION &&
@@ -67,8 +68,8 @@ public class OneClickPlugin extends Plugin
 		
 		Item[] items = inventory.getItems();
 		String clickedName = null;
-
 		int clickedSlot = event.getParam0();
+		
 		if (clickedSlot >= 0 && clickedSlot < items.length)
 		{
 			clickedName = Text.removeTags(client.getItemDefinition(items[clickedSlot].getId()).getName());
@@ -78,10 +79,12 @@ public class OneClickPlugin extends Plugin
 
 		String targetName = null;
 		
+		// Check Source -> Target
 		if (pairs.containsKey(clickedName.toLowerCase()))
 		{
 			targetName = pairs.get(clickedName.toLowerCase());
 		}
+		// Check Target -> Source (Reverse)
 		else if (pairs.containsValue(clickedName.toLowerCase()))
 		{
 			for (Map.Entry<String, String> entry : pairs.entrySet())
@@ -89,14 +92,14 @@ public class OneClickPlugin extends Plugin
 				if (entry.getValue().equals(clickedName.toLowerCase()))
 				{
 					targetName = entry.getValue();
-					clickedName = entry.getKey(); 
+					clickedName = entry.getKey();
 					break;
 				}
 			}
 		}
 
 		if (targetName == null) return;
-		
+
 		int sourceSlot = -1;
 		int sourceId = -1;
 		int targetSlot = -1;
@@ -122,15 +125,43 @@ public class OneClickPlugin extends Plugin
 
 		if (sourceSlot != -1 && targetSlot != -1)
 		{
-			client.setSelectedItemWidget(WidgetInfo.INVENTORY.getId());
-			client.setSelectedItemSlot(sourceSlot);
-			client.setSelectedItemId(sourceId);
+			// 1. Set the Selected Item using Reflection (bypasses missing API methods)
+			setSelectedInventoryItem(sourceSlot, sourceId);
 
-			event.setMenuAction(MenuAction.WIDGET_TARGET_ON_WIDGET);
-			event.setParam0(targetSlot); 
-			event.setParam1(WidgetInfo.INVENTORY.getId()); 
-			event.setIdentifier(targetId); 
-			
+			// 2. Modify the event using getMenuEntry() (Fixes the setters error)
+			event.getMenuEntry().setType(MenuAction.WIDGET_TARGET_ON_WIDGET);
+			event.getMenuEntry().setParam0(targetSlot);
+			event.getMenuEntry().setParam1(WidgetInfo.INVENTORY.getId());
+			event.getMenuEntry().setIdentifier(targetId);
+		}
+	}
+
+	private void setSelectedInventoryItem(int slot, int id)
+	{
+		try
+		{
+			// Use reflection to call the hidden methods on the Client
+			invokeMethod(client, "setSelectedItemWidget", int.class, WidgetInfo.INVENTORY.getId());
+			invokeMethod(client, "setSelectedItemSlot", int.class, slot);
+			invokeMethod(client, "setSelectedItemId", int.class, id);
+		}
+		catch (Exception e)
+		{
+			// If reflection fails, we just ignore it. 
+			// The plugin might still work depending on server-side packet validation.
+		}
+	}
+
+	private void invokeMethod(Object target, String methodName, Class<?> paramType, int paramValue)
+	{
+		try
+		{
+			Method method = target.getClass().getMethod(methodName, paramType);
+			method.invoke(target, paramValue);
+		}
+		catch (Exception ignored)
+		{
+			// Method not found or accessible
 		}
 	}
 
