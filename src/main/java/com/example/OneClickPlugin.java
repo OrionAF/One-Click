@@ -46,27 +46,17 @@ public class OneClickPlugin extends Plugin
 	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked event)
 	{
-		if (config.debug())
-		{
-			System.out.println("[OneClick DEBUG] Action: " + event.getMenuAction() + 
-				" | Param0: " + event.getParam0() + 
-				" | Param1: " + event.getParam1() +
-				" | ID: " + event.getId());
-		}
-
+		// 1. Filter Check
 		Widget widget = client.getWidget(event.getParam1());
 		if (widget == null) return;
 		
 		ItemContainer inventory = client.getItemContainer(InventoryID.INVENTORY);
 		if (inventory == null) return;
 		
-		Item[] items = inventory.getItems();
 		int clickedSlot = event.getParam0();
+		Item[] items = inventory.getItems();
 
-		if (clickedSlot < 0 || clickedSlot >= items.length) 
-		{
-			return;
-		}
+		if (clickedSlot < 0 || clickedSlot >= items.length) return;
 
 		Item clickedItem = items[clickedSlot];
 		int clickedId = clickedItem.getId();
@@ -75,14 +65,14 @@ public class OneClickPlugin extends Plugin
 
 		String clickedName = Text.removeTags(client.getItemDefinition(clickedId).getName()).toLowerCase();
 
+		// 2. Debug Print (Optional)
 		if (config.debug())
 		{
-			final String debugName = clickedName;
-			final int debugId = clickedId;
-			clientThread.invokeLater(() -> 
-				client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Clicked: " + debugName + " (ID: " + debugId + ")", null));
+			// Safe debug without lambda errors
+			System.out.println("Clicked: " + clickedName + " (" + clickedId + ") Action: " + event.getMenuAction());
 		}
 
+		// 3. Find Match
 		Map<String, String> pairs = parseConfig();
 		String targetIdentifier = null;
 		String clickedIdStr = String.valueOf(clickedId);
@@ -92,11 +82,9 @@ public class OneClickPlugin extends Plugin
 		else if (pairs.containsValue(clickedIdStr)) targetIdentifier = getKeyByValue(pairs, clickedIdStr);
 		else if (pairs.containsValue(clickedName)) targetIdentifier = getKeyByValue(pairs, clickedName);
 
-		if (targetIdentifier == null) 
-		{
-			return; 
-		}
+		if (targetIdentifier == null) return;
 
+		// 4. Find Other Item Slot
 		int sourceSlot = clickedSlot;
 		int sourceId = clickedId;
 		int targetSlot = -1;
@@ -125,29 +113,34 @@ public class OneClickPlugin extends Plugin
 
 		if (targetSlot != -1)
 		{
-			// Create FINAL variables for the lambda to use
 			final int finalTargetId = targetId;
+			final int finalTargetSlot = targetSlot;
+			final int widgetId = event.getParam1(); // Use the actual widget from the event
 
 			if (config.debug())
 			{
 				clientThread.invokeLater(() -> 
-					client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Combining -> " + finalTargetId, null));
+					client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Combining -> " + finalTargetId + " (Slot " + finalTargetSlot + ")", null));
 			}
 
-			setSelectedInventoryItem(sourceSlot, sourceId);
+			// 5. EXECUTE SWAP
 			
-			event.getMenuEntry().setType(MenuAction.WIDGET_TARGET_ON_WIDGET);
-			event.getMenuEntry().setParam0(targetSlot);
-			event.getMenuEntry().setParam1(WidgetInfo.INVENTORY.getId());
-			event.getMenuEntry().setIdentifier(targetId);
-		}
-		else
-		{
-			if (config.debug())
+			// A. Force Select the Source Item
+			setSelectedInventoryItem(sourceSlot, sourceId);
+
+			// B. Change the Click Event to target the Other Item
+			if (config.clickMode() == OneClickConfig.ClickMode.LEGACY)
 			{
-				clientThread.invokeLater(() -> 
-					client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Target item not found in bag!", null));
+				event.getMenuEntry().setType(MenuAction.ITEM_USE_ON_ITEM);
 			}
+			else
+			{
+				event.getMenuEntry().setType(MenuAction.WIDGET_TARGET_ON_WIDGET);
+			}
+
+			event.getMenuEntry().setParam0(targetSlot);
+			event.getMenuEntry().setParam1(widgetId); // Use exact widget ID from the click
+			event.getMenuEntry().setIdentifier(targetId);
 		}
 	}
 
@@ -161,10 +154,7 @@ public class OneClickPlugin extends Plugin
 		}
 		catch (Exception e)
 		{
-			if (config.debug())
-			{
-				System.out.println("Reflection Error: " + e.getMessage());
-			}
+			// Reflection fail
 		}
 	}
 
