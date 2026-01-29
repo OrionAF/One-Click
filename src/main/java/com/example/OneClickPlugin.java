@@ -65,7 +65,7 @@ public class OneClickPlugin extends Plugin
 
 		String clickedName = Text.removeTags(client.getItemDefinition(clickedId).getName()).toLowerCase();
 
-		// Debug Print
+		// DEBUG: Print to console
 		if (config.debug())
 		{
 			System.out.println("Clicked: " + clickedName + " (" + clickedId + ")");
@@ -75,6 +75,7 @@ public class OneClickPlugin extends Plugin
 		String targetIdentifier = null;
 		String clickedIdStr = String.valueOf(clickedId);
 
+		// Match Logic
 		if (pairs.containsKey(clickedIdStr)) targetIdentifier = pairs.get(clickedIdStr);
 		else if (pairs.containsKey(clickedName)) targetIdentifier = pairs.get(clickedName);
 		else if (pairs.containsValue(clickedIdStr)) targetIdentifier = getKeyByValue(pairs, clickedIdStr);
@@ -84,6 +85,8 @@ public class OneClickPlugin extends Plugin
 
 		int sourceSlot = clickedSlot;
 		int sourceId = clickedId;
+		String sourceName = clickedName; // We need the name now too
+		
 		int targetSlot = -1;
 		int targetId = -1;
 
@@ -114,17 +117,18 @@ public class OneClickPlugin extends Plugin
 			final int finalTargetSlot = targetSlot;
 			final int widgetId = event.getParam1();
 
+			// 1. FORCE CLIENT STATE
+			// We need to set ID, Slot, Widget, AND Name for the client to be happy.
+			boolean success = setSelectedInventoryItem(sourceSlot, sourceId, sourceName);
+
 			if (config.debug())
 			{
+				final String status = success ? "State Set!" : "Reflection Failed!";
 				clientThread.invokeLater(() -> 
-					client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "OneClick: " + clickedId + " -> " + finalTargetId, null));
+					client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "OneClick: " + status + " (" + sourceId + "->" + finalTargetId + ")", null));
 			}
 
-			// 1. Force the client to think an item is selected
-			setSelectedInventoryItem(sourceSlot, sourceId);
-			setClientItemSelected(true); // <-- NEW CRITICAL FIX
-
-			// 2. Change the click to target the 2nd item
+			// 2. MODIFY CLICK
 			if (config.clickMode() == OneClickConfig.ClickMode.LEGACY)
 			{
 				event.getMenuEntry().setType(MenuAction.ITEM_USE_ON_ITEM);
@@ -140,49 +144,43 @@ public class OneClickPlugin extends Plugin
 		}
 	}
 
-	private void setSelectedInventoryItem(int slot, int id)
+	private boolean setSelectedInventoryItem(int slot, int id, String name)
 	{
+		boolean success = false;
 		try
 		{
+			// Try to find the methods (RuneLite API)
 			invokeMethod(client, "setSelectedItemWidget", int.class, WidgetInfo.INVENTORY.getId());
 			invokeMethod(client, "setSelectedItemSlot", int.class, slot);
 			invokeMethod(client, "setSelectedItemId", int.class, id);
+			
+			// Some clients require the Name to be set too!
+			// We try to capitalize it nicely just in case (e.g. "feather" -> "Feather")
+			String niceName = Character.toUpperCase(name.charAt(0)) + name.substring(1);
+			invokeMethod(client, "setSelectedItemName", String.class, niceName);
+			
+			success = true;
 		}
 		catch (Exception e)
 		{
-			// Ignore
+			// Reflection failed
 		}
+
+		// Try the brute force boolean as backup
+		setClientItemSelected(true);
+
+		return success;
 	}
 
-	/**
-	 * Tries to find the hidden boolean "isItemSelected" and force it to true.
-	 */
 	private void setClientItemSelected(boolean selected)
 	{
-		try
-		{
-			// 1. Try Standard Method
-			invokeMethod(client, "setItemSelected", boolean.class, selected);
-			return;
-		}
-		catch (Exception e) {}
-
-		try
-		{
-			// 2. Try Integer Method (Some older clients use int 1/0 instead of boolean)
-			invokeMethod(client, "setItemSelected", int.class, selected ? 1 : 0);
-			return;
-		}
-		catch (Exception e) {}
-		
-		// 3. Bruteforce Fields: Check for a boolean flag named 'isItemSelected' or similar
-		try 
-		{
+		try { invokeMethod(client, "setItemSelected", boolean.class, selected); } catch (Exception e) {}
+		try { invokeMethod(client, "setItemSelected", int.class, selected ? 1 : 0); } catch (Exception e) {}
+		try {
 			Field f = client.getClass().getDeclaredField("isItemSelected");
 			f.setAccessible(true);
 			f.setBoolean(client, selected);
-		} 
-		catch (Exception e) {}
+		} catch (Exception e) {}
 	}
 
 	private void invokeMethod(Object target, String methodName, Class<?> paramType, Object paramValue) throws Exception
