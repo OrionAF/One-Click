@@ -2,6 +2,7 @@ package com.example;
 
 import com.google.inject.Provides;
 import javax.inject.Inject;
+import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.InventoryID;
 import net.runelite.api.Item;
@@ -22,7 +23,7 @@ import java.util.Map;
 @PluginDescriptor(
 	name = "One Click",
 	description = "Combines configured items in one click",
-	tags = {"fletching", "herblore", "macro", "automation"}
+	tags = {"fletching", "automation"}
 )
 public class OneClickPlugin extends Plugin
 {
@@ -41,7 +42,7 @@ public class OneClickPlugin extends Plugin
 	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked event)
 	{
-		// Only run if we are clicking an item in the inventory
+		// 1. Filter out non-inventory clicks
 		if (event.getMenuAction() != MenuAction.ITEM_USE && 
 			event.getMenuAction() != MenuAction.ITEM_FIRST_OPTION &&
 			event.getMenuAction() != MenuAction.ITEM_SECOND_OPTION &&
@@ -52,87 +53,135 @@ public class OneClickPlugin extends Plugin
 			return;
 		}
 
-		Widget widget = client.getWidget(event.getParam1());
-		if (widget == null)
-		{
-			return;
-		}
-		
-		int clickedItemId = event.getItemId();
-		if (clickedItemId == -1) return;
-
-		Map<String, String> pairs = parseConfig();
-		
+		// 2. Validate Inventory
 		ItemContainer inventory = client.getItemContainer(InventoryID.INVENTORY);
 		if (inventory == null) return;
 		
 		Item[] items = inventory.getItems();
-		String clickedName = null;
 		int clickedSlot = event.getParam0();
+		if (clickedSlot < 0 || clickedSlot >= items.length) return;
+
+		Item clickedItem = items[clickedSlot];
+		int clickedId = clickedItem.getId();
+		String clickedName = Text.removeTags(client.getItemDefinition(clickedId).getName()).toLowerCase();
+
+		// 3. Check Config for Matches (ID or Name)
+		Map<String, String> pairs = parseConfig();
+		String targetIdentifier = null; // This will be the Name or ID of the target
 		
-		if (clickedSlot >= 0 && clickedSlot < items.length)
-		{
-			clickedName = Text.removeTags(client.getItemDefinition(items[clickedSlot].getId()).getName());
-		}
+		String clickedIdStr = String.valueOf(clickedId);
 
-		if (clickedName == null) return;
-
-		String targetName = null;
+		// Check if we clicked the Source (Key) -> Find Target (Value)
+		if (pairs.containsKey(clickedIdStr)) targetIdentifier = pairs.get(clickedIdStr);
+		else if (pairs.containsKey(clickedName)) targetIdentifier = pairs.get(clickedName);
 		
-		// Check Source -> Target
-		if (pairs.containsKey(clickedName.toLowerCase()))
-		{
-			targetName = pairs.get(clickedName.toLowerCase());
-		}
-		// Check Target -> Source (Reverse)
-		else if (pairs.containsValue(clickedName.toLowerCase()))
-		{
-			for (Map.Entry<String, String> entry : pairs.entrySet())
-			{
-				if (entry.getValue().equals(clickedName.toLowerCase()))
-				{
-					targetName = entry.getValue();
-					clickedName = entry.getKey();
-					break;
-				}
-			}
-		}
+		// Check if we clicked the Target (Value) -> Find Source (Key) [Reverse check]
+		else if (pairs.containsValue(clickedIdStr)) targetIdentifier = getKeyByValue(pairs, clickedIdStr);
+		else if (pairs.containsValue(clickedName)) targetIdentifier = getKeyByValue(pairs, clickedName);
 
-		if (targetName == null) return;
+		if (targetIdentifier == null) return; // No match found
 
+		// 4. Find the slots for Source and Target in inventory
 		int sourceSlot = -1;
 		int sourceId = -1;
 		int targetSlot = -1;
 		int targetId = -1;
 
+		boolean lookingForId = isNumeric(targetIdentifier);
+
 		for (int i = 0; i < items.length; i++)
 		{
-			String itemName = Text.removeTags(client.getItemDefinition(items[i].getId()).getName()).toLowerCase();
-			
-			if (sourceSlot == -1 && itemName.equals(clickedName.toLowerCase()))
-			{
-				sourceSlot = i;
-				sourceId = items[i].getId();
-			}
-			else if (targetSlot == -1 && itemName.equals(targetName.toLowerCase()))
-			{
-				targetSlot = i;
-				targetId = items[i].getId();
-			}
+			Item item = items[i];
+			int tempId = item.getId();
+			String tempName = Text.removeTags(client.getItemDefinition(tempId).getName()).toLowerCase();
 
-			if (sourceSlot != -1 && targetSlot != -1) break;
+			// Check Source (What we are using)
+			if (sourceSlot == -1)
+			{
+				boolean match = (tempId == clickedId); // If we clicked source
+				if (!match) // If we clicked target, source is the other one
+				{
+					if (lookingForId && String.valueOf(tempId).equals(targetIdentifier)) match = true;
+					else if (!lookingForId && tempName.equals(targetIdentifier)) match = true;
+				}
+
+				if (match)
+				{
+					// Wait, if we clicked 'Target', then 'targetIdentifier' is actually the Source.
+					// Let's simplify: We need one slot to be the Clicked item, one to be the Other item.
+				}
+			}
 		}
 
-		if (sourceSlot != -1 && targetSlot != -1)
-		{
-			// 1. Set the Selected Item using Reflection (bypasses missing API methods)
-			setSelectedInventoryItem(sourceSlot, sourceId);
+		// Re-do Search Logic simplistically
+		// We have "Clicked Item" (A). We found "Other Item" (B) in config.
+		// We want to trigger A -> B.
+		
+		// Determine which is Source and which is Target based on config order doesn't strictly matter
+		// for A->B or B->A interactions usually, but let's stick to config Key -> Value.
+		
+		String configTarget = pairs.getOrDefault(clickedIdStr, pairs.get(clickedName));
+		boolean isSource = (configTarget != null); // If true, we clicked Source.
+		
+		String otherItemIdentifier = isSource ? configTarget : getKeyByValue(pairs, clickedIdStr);
+		if (otherItemIdentifier == null) otherItemIdentifier = getKeyByValue(pairs, clickedName);
 
-			// 2. Modify the event using getMenuEntry() (Fixes the setters error)
+		// Find the "Other" item
+		int otherSlot = -1;
+		int otherId = -1;
+		
+		boolean otherIsId = isNumeric(otherItemIdentifier);
+
+		for (int i = 0; i < items.length; i++)
+		{
+			// Skip the item we just clicked (unless we are using item on itself?)
+			if (i == clickedSlot) continue;
+
+			int tid = items[i].getId();
+			String tname = Text.removeTags(client.getItemDefinition(tid).getName()).toLowerCase();
+
+			if (otherIsId)
+			{
+				if (String.valueOf(tid).equals(otherItemIdentifier))
+				{
+					otherSlot = i;
+					otherId = tid;
+					break;
+				}
+			}
+			else
+			{
+				if (tname.equals(otherItemIdentifier))
+				{
+					otherSlot = i;
+					otherId = tid;
+					break;
+				}
+			}
+		}
+
+		if (otherSlot != -1)
+		{
+			// We have both items.
+			// source = Clicked Item, target = Other Item
+			int finalSourceSlot = clickedSlot;
+			int finalSourceId = clickedId;
+			int finalTargetSlot = otherSlot;
+			int finalTargetId = otherId;
+
+			debugMsg("Combining " + finalSourceId + " -> " + finalTargetId);
+
+			// EXECUTE
+			setSelectedInventoryItem(finalSourceSlot, finalSourceId);
+			
 			event.getMenuEntry().setType(MenuAction.WIDGET_TARGET_ON_WIDGET);
-			event.getMenuEntry().setParam0(targetSlot);
+			event.getMenuEntry().setParam0(finalTargetSlot);
 			event.getMenuEntry().setParam1(WidgetInfo.INVENTORY.getId());
-			event.getMenuEntry().setIdentifier(targetId);
+			event.getMenuEntry().setIdentifier(finalTargetId);
+		}
+		else
+		{
+			debugMsg("Found config match but could not find the other item in inventory.");
 		}
 	}
 
@@ -140,29 +189,35 @@ public class OneClickPlugin extends Plugin
 	{
 		try
 		{
-			// Use reflection to call the hidden methods on the Client
 			invokeMethod(client, "setSelectedItemWidget", int.class, WidgetInfo.INVENTORY.getId());
 			invokeMethod(client, "setSelectedItemSlot", int.class, slot);
 			invokeMethod(client, "setSelectedItemId", int.class, id);
 		}
 		catch (Exception e)
 		{
-			// If reflection fails, we just ignore it. 
-			// The plugin might still work depending on server-side packet validation.
+			debugMsg("Reflection failed: " + e.getMessage());
 		}
 	}
 
-	private void invokeMethod(Object target, String methodName, Class<?> paramType, int paramValue)
+	private void invokeMethod(Object target, String methodName, Class<?> paramType, int paramValue) throws Exception
 	{
-		try
+		Method method = target.getClass().getMethod(methodName, paramType);
+		method.invoke(target, paramValue);
+	}
+
+	private String getKeyByValue(Map<String, String> map, String value)
+	{
+		for (Map.Entry<String, String> entry : map.entrySet())
 		{
-			Method method = target.getClass().getMethod(methodName, paramType);
-			method.invoke(target, paramValue);
+			if (entry.getValue().equals(value)) return entry.getKey();
 		}
-		catch (Exception ignored)
-		{
-			// Method not found or accessible
-		}
+		return null;
+	}
+
+	private boolean isNumeric(String str)
+	{
+		if (str == null) return false;
+		return str.matches("-?\\d+");
 	}
 
 	private Map<String, String> parseConfig()
@@ -180,5 +235,13 @@ public class OneClickPlugin extends Plugin
 			}
 		}
 		return pairs;
+	}
+
+	private void debugMsg(String msg)
+	{
+		if (config.debug())
+		{
+			client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "[OneClick] " + msg, null);
+		}
 	}
 }
