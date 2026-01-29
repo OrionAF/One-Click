@@ -9,12 +9,23 @@ public interface OneClickConfig extends Config
 {
 	@ConfigItem(
 		keyName = "idPairs",
-		name = "Item Pairs",
-		description = "List of item pairs to combine in format Name:Name (e.g. Feather:Arrow shaft). One per line or comma separated.",
+		name = "Item Pairs (Names or IDs)",
+		description = "Format: Source:Target. Example: 'Feather:Arrow shaft' OR '314:52'.",
 		position = 1
 	)
 	default String idPairs()
 	{
-		return "Feather:Arrow shaft\nHeadless arrow:Bronze arrowtips\nKnife:Oak logs";
+		return "Feather:Arrow shaft\n314:52";
+	}
+
+	@ConfigItem(
+		keyName = "debug",
+		name = "Debug Messages",
+		description = "Show chat messages to help fix issues.",
+		position = 2
+	)
+	default boolean debug()
+	{
+		return true;
 	}
 }
